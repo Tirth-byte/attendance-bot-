@@ -179,37 +179,63 @@ client.on('messageCreate', async (message) => {
   }
 
   else if (command === '!mark') {
-    const roll = args[1];
-    const attendedNum = parseInt(args[2]);
-
-    if (!roll || isNaN(attendedNum)) {
-      return message.reply('Usage: !mark <roll> <attended_lectures>');
-    }
-
     if (session.lectureCount === 0) {
       return message.reply('Please set the total lecture count for the day first using `!setlectures <number>`.');
     }
 
-    if (attendedNum < 0 || attendedNum > session.lectureCount) {
-      return message.reply(`Invalid attended lectures. It must be between 0 and ${session.lectureCount}.`);
+    if (args.length < 3 || args.length % 2 === 0) {
+      return message.reply('Usage: !mark <roll> <attended_lectures> [<roll2> <attended2> ...]');
     }
 
-    try {
-      const student = await getStudent(session.class_id, roll);
-      if (!student) {
-        return message.reply(`Student with Roll **${roll}** does not exist in class **${session.class_id}**. Please add them using !addstudent or upload the CSV first.`);
+    const pairs = [];
+    for (let i = 1; i < args.length; i += 2) {
+      const roll = args[i];
+      const attendedNum = parseInt(args[i + 1]);
+
+      if (!roll || isNaN(attendedNum)) {
+        return message.reply(`Invalid format near \`${roll} ${args[i + 1]}\`. Usage: !mark <roll> <attended> ...`);
       }
 
-      const existing = await checkDuplicateAttendance(session.class_id, session.currentDate, roll);
-      if (existing) {
-        return message.reply(`Attendance already marked for Roll: ${roll} on ${session.currentDate} (Class: ${session.class_id}). Use !change to update it.`);
+      if (attendedNum < 0 || attendedNum > session.lectureCount) {
+        return message.reply(`Invalid attended lectures for Roll ${roll} (${attendedNum}). It must be between 0 and ${session.lectureCount}.`);
       }
 
-      await markAttendance(session.class_id, session.currentDate, roll, attendedNum, session.lectureCount);
-      message.reply(`Recorded: Roll **${roll}** attended **${attendedNum}/${session.lectureCount}** lectures on **${session.currentDate}** (Class: ${session.class_id}).`);
-    } catch (error) {
-      console.error(error);
-      message.reply('An error occurred while marking attendance.');
+      pairs.push({ roll, attendedNum });
+    }
+
+    let successCount = 0;
+    let errorMessages = [];
+
+    for (const { roll, attendedNum } of pairs) {
+      try {
+        const student = await getStudent(session.class_id, roll);
+        if (!student) {
+          errorMessages.push(`Roll **${roll}** does not exist.`);
+          continue;
+        }
+
+        const existing = await checkDuplicateAttendance(session.class_id, session.currentDate, roll);
+        if (existing) {
+          errorMessages.push(`Roll **${roll}** already marked (use !change).`);
+          continue;
+        }
+
+        await markAttendance(session.class_id, session.currentDate, roll, attendedNum, session.lectureCount);
+        successCount++;
+      } catch (error) {
+        console.error(error);
+        errorMessages.push(`Server error marking Roll **${roll}**.`);
+      }
+    }
+
+    let reply = `✅ Recorded attendance for **${successCount}** students on ${session.currentDate} (Class: ${session.class_id}).`;
+    if (errorMessages.length > 0) {
+      reply += `\n⚠️ Issues:\n- ` + errorMessages.join('\n- ');
+    }
+    
+    // Only send if we processed something
+    if (successCount > 0 || errorMessages.length > 0) {
+      message.reply(reply);
     }
   }
 

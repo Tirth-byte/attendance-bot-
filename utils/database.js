@@ -18,15 +18,16 @@ const initDatabase = () => {
     PRIMARY KEY (class_id, roll_number)
   )`);
 
-  // Attendance table (separated by class_id)
-  db.exec(`CREATE TABLE IF NOT EXISTS attendance (
+  // Attendance table (daily total rather than per-lecture)
+  db.exec(`CREATE TABLE IF NOT EXISTS daily_attendance (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     class_id TEXT NOT NULL,
     date TEXT NOT NULL,
     roll_number TEXT NOT NULL,
-    lecture_number INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    FOREIGN KEY (class_id, roll_number) REFERENCES students (class_id, roll_number)
+    attended_lectures INTEGER NOT NULL,
+    total_lectures INTEGER NOT NULL,
+    FOREIGN KEY (class_id, roll_number) REFERENCES students (class_id, roll_number),
+    UNIQUE(class_id, date, roll_number)
   )`);
 
   // Users table
@@ -65,17 +66,21 @@ const getAllStudents = (classId) => {
 
 // Get total unique lectures between dates for a class
 const getLectureCountBetweenDates = (classId, date1, date2) => {
-  const stmt = db.prepare(
-    'SELECT COUNT(DISTINCT date || "_" || lecture_number) as count FROM attendance WHERE class_id = ? AND date BETWEEN ? AND ?'
-  );
+  const stmt = db.prepare(`
+    SELECT SUM(total) as sum FROM (
+      SELECT DISTINCT date, total_lectures as total 
+      FROM daily_attendance 
+      WHERE class_id = ? AND date BETWEEN ? AND ?
+    )
+  `);
   const row = stmt.get(classId, date1, date2);
-  return row ? row.count : 0;
+  return row ? (row.sum || 0) : 0;
 };
 
 // Get all attendance for a student in a class
 const getStudentAttendance = (classId, rollNumber) => {
   const stmt = db.prepare(
-    'SELECT * FROM attendance WHERE class_id = ? AND roll_number = ?'
+    'SELECT * FROM daily_attendance WHERE class_id = ? AND roll_number = ? ORDER BY date ASC'
   );
   return stmt.all(classId, rollNumber);
 };
@@ -86,10 +91,10 @@ const getAllAttendanceStats = (classId) => {
     SELECT 
       s.roll_number, 
       s.name,
-      COUNT(a.id) as total_lectures,
-      SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END) as attended
+      COALESCE(SUM(a.total_lectures), 0) as total_lectures,
+      COALESCE(SUM(a.attended_lectures), 0) as attended
     FROM students s
-    LEFT JOIN attendance a ON s.class_id = a.class_id AND s.roll_number = a.roll_number
+    LEFT JOIN daily_attendance a ON s.class_id = a.class_id AND s.roll_number = a.roll_number
     WHERE s.class_id = ?
     GROUP BY s.roll_number
   `);
@@ -97,20 +102,20 @@ const getAllAttendanceStats = (classId) => {
 };
 
 // Mark attendance
-const markAttendance = (classId, date, rollNumber, lectureNumber, status) => {
+const markAttendance = (classId, date, rollNumber, attended, total) => {
   const stmt = db.prepare(
-    'INSERT INTO attendance (class_id, date, roll_number, lecture_number, status) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO daily_attendance (class_id, date, roll_number, attended_lectures, total_lectures) VALUES (?, ?, ?, ?, ?)'
   );
-  const result = stmt.run(classId, date, rollNumber, lectureNumber, status);
-  return { id: result.lastInsertRowid, classId, date, rollNumber, lectureNumber, status };
+  const result = stmt.run(classId, date, rollNumber, attended, total);
+  return { id: result.lastInsertRowid, classId, date, rollNumber, attended, total };
 };
 
 // Update attendance
-const updateAttendance = (classId, date, rollNumber, lectureNumber, status) => {
+const updateAttendance = (classId, date, rollNumber, attended) => {
   const stmt = db.prepare(
-    'UPDATE attendance SET status = ? WHERE class_id = ? AND date = ? AND roll_number = ? AND lecture_number = ?'
+    'UPDATE daily_attendance SET attended_lectures = ? WHERE class_id = ? AND date = ? AND roll_number = ?'
   );
-  const result = stmt.run(status, classId, date, rollNumber, lectureNumber);
+  const result = stmt.run(attended, classId, date, rollNumber);
   return { changes: result.changes };
 };
 
@@ -118,12 +123,12 @@ const updateAttendance = (classId, date, rollNumber, lectureNumber, status) => {
 const getAttendance = (classId, date, rollNumber) => {
   if (rollNumber) {
     const stmt = db.prepare(
-      'SELECT * FROM attendance WHERE class_id = ? AND date = ? AND roll_number = ?'
+      'SELECT * FROM daily_attendance WHERE class_id = ? AND date = ? AND roll_number = ?'
     );
     return stmt.all(classId, date, rollNumber);
   } else {
     const stmt = db.prepare(
-      'SELECT * FROM attendance WHERE class_id = ? AND date = ?'
+      'SELECT * FROM daily_attendance WHERE class_id = ? AND date = ?'
     );
     return stmt.all(classId, date);
   }
@@ -138,11 +143,11 @@ const verifyUser = (classId, password) => {
 };
 
 // Check if attendance already exists
-const checkDuplicateAttendance = (classId, date, rollNumber, lectureNumber) => {
+const checkDuplicateAttendance = (classId, date, rollNumber) => {
   const stmt = db.prepare(
-    'SELECT id FROM attendance WHERE class_id = ? AND date = ? AND roll_number = ? AND lecture_number = ?'
+    'SELECT id, total_lectures FROM daily_attendance WHERE class_id = ? AND date = ? AND roll_number = ?'
   );
-  return stmt.get(classId, date, rollNumber, lectureNumber);
+  return stmt.get(classId, date, rollNumber);
 };
 
 module.exports = {

@@ -180,31 +180,28 @@ client.on('messageCreate', async (message) => {
 
   else if (command === '!mark') {
     const roll = args[1];
-    const lectureNum = parseInt(args[2]);
-    const status = args[3] ? args[3].toLowerCase() : null;
+    const attendedNum = parseInt(args[2]);
 
-    if (!roll || isNaN(lectureNum) || !['present', 'absent', 'p', 'a'].includes(status)) {
-      return message.reply('Usage: !mark <roll> <lecture_number> <present/absent>');
+    if (!roll || isNaN(attendedNum)) {
+      return message.reply('Usage: !mark <roll> <attended_lectures>');
     }
-
-    const normalizedStatus = (status === 'p' || status === 'present') ? 'Present' : 'Absent';
 
     if (session.lectureCount === 0) {
-      return message.reply('Please set the lecture count for the day first using `!setlectures <number>`.');
+      return message.reply('Please set the total lecture count for the day first using `!setlectures <number>`.');
     }
 
-    if (lectureNum < 1 || lectureNum > session.lectureCount) {
-      return message.reply(`Invalid lecture number. It must be between 1 and ${session.lectureCount}.`);
+    if (attendedNum < 0 || attendedNum > session.lectureCount) {
+      return message.reply(`Invalid attended lectures. It must be between 0 and ${session.lectureCount}.`);
     }
 
     try {
-      const existing = await checkDuplicateAttendance(session.class_id, session.currentDate, roll, lectureNum);
+      const existing = await checkDuplicateAttendance(session.class_id, session.currentDate, roll);
       if (existing) {
-        return message.reply(`Attendance already marked for Roll: ${roll}, Lecture: ${lectureNum} on ${session.currentDate} (Class: ${session.class_id}).`);
+        return message.reply(`Attendance already marked for Roll: ${roll} on ${session.currentDate} (Class: ${session.class_id}). Use !change to update it.`);
       }
 
-      await markAttendance(session.class_id, session.currentDate, roll, lectureNum, normalizedStatus);
-      message.reply(`Marked **${normalizedStatus}** for Roll: **${roll}**, Lecture: **${lectureNum}** on **${session.currentDate}** (Class: ${session.class_id}).`);
+      await markAttendance(session.class_id, session.currentDate, roll, attendedNum, session.lectureCount);
+      message.reply(`Recorded: Roll **${roll}** attended **${attendedNum}/${session.lectureCount}** lectures on **${session.currentDate}** (Class: ${session.class_id}).`);
     } catch (error) {
       console.error(error);
       message.reply('An error occurred while marking attendance.');
@@ -214,24 +211,25 @@ client.on('messageCreate', async (message) => {
   else if (command === '!change') {
     const roll = args[1];
     const date = args[2];
-    const lectureNum = parseInt(args[3]);
-    const status = args[4] ? args[4].toLowerCase() : null;
+    const attendedNum = parseInt(args[3]);
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
-    if (!roll || !date || !dateRegex.test(date) || isNaN(lectureNum) || !['present', 'absent', 'p', 'a'].includes(status)) {
-      return message.reply('Usage: !change <roll> <date> <lecture_number> <present/absent>');
+    if (!roll || !date || !dateRegex.test(date) || isNaN(attendedNum)) {
+      return message.reply('Usage: !change <roll> <YYYY-MM-DD> <attended_lectures>');
     }
 
-    const normalizedStatus = (status === 'p' || status === 'present') ? 'Present' : 'Absent';
-
     try {
-      const existing = await checkDuplicateAttendance(session.class_id, date, roll, lectureNum);
+      const existing = await checkDuplicateAttendance(session.class_id, date, roll);
       if (!existing) {
-        return message.reply(`No attendance record found for Roll: ${roll}, Date: ${date}, Lecture: ${lectureNum} to update in class ${session.class_id}.`);
+        return message.reply(`No attendance record found for Roll: ${roll}, Date: ${date} to update in class ${session.class_id}.`);
       }
 
-      await updateAttendance(session.class_id, date, roll, lectureNum, normalizedStatus);
-      message.reply(`Updated attendance to **${normalizedStatus}** for Roll: **${roll}**, Date: **${date}**, Lecture: **${lectureNum}** (Class: ${session.class_id}).`);
+      if (attendedNum < 0 || attendedNum > existing.total_lectures) {
+         return message.reply(`Invalid attended lectures. It must be between 0 and ${existing.total_lectures} (the total recorded for that day).`);
+      }
+
+      await updateAttendance(session.class_id, date, roll, attendedNum);
+      message.reply(`Updated attendance: Roll **${roll}** attended **${attendedNum}/${existing.total_lectures}** lectures on **${date}** (Class: ${session.class_id}).`);
     } catch (error) {
       console.error(error);
       message.reply('An error occurred while updating attendance.');
@@ -251,8 +249,8 @@ client.on('messageCreate', async (message) => {
       }
 
       const attendanceRecords = await getStudentAttendance(session.class_id, roll);
-      const totalLectures = attendanceRecords.length;
-      const attended = attendanceRecords.filter(r => r.status === 'Present').length;
+      const totalLectures = attendanceRecords.reduce((sum, r) => sum + r.total_lectures, 0);
+      const attended = attendanceRecords.reduce((sum, r) => sum + r.attended_lectures, 0);
       const absent = totalLectures - attended;
       const percentage = totalLectures > 0 ? ((attended / totalLectures) * 100).toFixed(2) : 0;
 
@@ -266,7 +264,7 @@ client.on('messageCreate', async (message) => {
         `Percentage:     ${percentage}%`,
         `--------------------------------------------------`,
         `Detailed Logs:`,
-        ...attendanceRecords.map(r => `${r.date} | Lecture ${r.lecture_number} | ${r.status}`)
+        ...attendanceRecords.map(r => `${r.date} | Attended: ${r.attended_lectures}/${r.total_lectures}`)
       ].join('\n');
 
       const fileName = `report_${session.class_id}_${roll}.txt`;
@@ -390,13 +388,13 @@ client.on('messageCreate', async (message) => {
         return message.reply(`No attendance records found for **${dateStr}** in class **${session.class_id}**.`);
       }
 
-      const lecturesHeld = [...new Set(attendanceOnDate.map(a => a.lecture_number))].sort((a, b) => a - b);
+      const totalLecturesForDay = attendanceOnDate[0].total_lectures;
       
       let reportContent = [
         `Attendance Summary for Class: ${session.class_id} | Date: ${dateStr}`,
-        `Lectures held: ${lecturesHeld.join(', ')}`,
+        `Total Lectures held: ${totalLecturesForDay}`,
         `--------------------------------------------------`,
-        `Roll | Name                 | ${lecturesHeld.map(l => `L${l}`.padEnd(4)).join(' | ')}`,
+        `Roll | Name                 | Attended/Total`,
         `--------------------------------------------------`
       ];
 
@@ -404,19 +402,10 @@ client.on('messageCreate', async (message) => {
         const rollStr = s.roll_number.padEnd(4);
         const nameStr = s.name.substring(0, 20).padEnd(20);
         
-        const attendanceMap = {};
-        attendanceOnDate
-          .filter(a => a.roll_number === s.roll_number)
-          .forEach(a => {
-            attendanceMap[a.lecture_number] = a.status === 'Present' ? 'P' : 'A';
-          });
+        const record = attendanceOnDate.find(a => a.roll_number === s.roll_number);
+        const attendanceStr = record ? `${record.attended_lectures}/${record.total_lectures}` : 'No Record';
 
-        const lectureStatus = lecturesHeld.map(l => {
-          const status = attendanceMap[l] || '-';
-          return status.padEnd(4);
-        }).join(' | ');
-
-        reportContent.push(`${rollStr} | ${nameStr} | ${lectureStatus}`);
+        reportContent.push(`${rollStr} | ${nameStr} | ${attendanceStr}`);
       });
 
       const fileName = `check_${session.class_id}_${dateStr}.txt`;

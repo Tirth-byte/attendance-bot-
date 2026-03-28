@@ -150,6 +150,12 @@ const checkDuplicateAttendance = (classId, date, rollNumber) => {
   return stmt.get(classId, date, rollNumber);
 };
 
+// Get all unique dates
+const getAllDates = (classId) => {
+  const stmt = db.prepare('SELECT DISTINCT date FROM daily_attendance WHERE class_id = ? ORDER BY date ASC');
+  return stmt.all(classId).map(r => r.date);
+};
+
 module.exports = {
   initDatabase,
   addStudent,
@@ -163,5 +169,6 @@ module.exports = {
   getAttendance,
   verifyUser,
   checkDuplicateAttendance,
+  getAllDates,
   db,
 };

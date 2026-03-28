@@ -3,6 +3,7 @@ const { Client, GatewayIntentBits, AttachmentBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const { createObjectCsvWriter } = require('csv-writer');
 const { 
   initDatabase, 
   verifyUser, 
@@ -15,7 +16,8 @@ const {
   getAllAttendanceStats,
   getAllStudents,
   getAttendance,
-  getLectureCountBetweenDates
+  getLectureCountBetweenDates,
+  getAllDates
 } = require('./utils/database');
 
 // Initialize database
@@ -478,6 +480,78 @@ client.on('messageCreate', async (message) => {
 
   else if (command === '!ping') {
     message.reply('Pong!');
+  }
+
+  else if (command === '!export') {
+    message.reply('Generating full CSV export... please wait a moment.');
+    try {
+      const allStudents = await getAllStudents(session.class_id);
+      const allDates = await getAllDates(session.class_id); 
+      
+      if (allStudents.length === 0) {
+        return message.reply('No students found in class.');
+      }
+      
+      const fileName = `attendance_export_${session.class_id}_${Date.now()}.csv`;
+      const filePath = path.join(__dirname, fileName);
+
+      // Setup CSV headers
+      const headers = [
+        { id: 'roll_number', title: 'Roll Number' },
+        { id: 'name', title: 'Name' },
+        ...allDates.map(date => ({ id: date, title: date })),
+        { id: 'total_attended', title: 'Total Lectures Attended' },
+        { id: 'total_held', title: 'Total Lectures Held' },
+        { id: 'percentage', title: 'Percentage (%)' }
+      ];
+
+      const csvWriter = createObjectCsvWriter({
+        path: filePath,
+        header: headers
+      });
+
+      // Prepare data rows
+      const records = [];
+      const stats = await getAllAttendanceStats(session.class_id);
+
+      for (const student of allStudents) {
+        const studentStats = stats.find(s => s.roll_number === student.roll_number) || { total_lectures: 0, attended: 0 };
+        const percentage = studentStats.total_lectures > 0 ? ((studentStats.attended / studentStats.total_lectures) * 100).toFixed(2) : '0.00';
+        
+        const rowData = {
+          roll_number: student.roll_number,
+          name: student.name,
+          total_attended: studentStats.attended,
+          total_held: studentStats.total_lectures,
+          percentage: percentage
+        };
+
+        const studentDaily = await getStudentAttendance(session.class_id, student.roll_number);
+        
+        for (const date of allDates) {
+          const attendanceOnDate = studentDaily.find(a => a.date === date);
+          if (attendanceOnDate) {
+            rowData[date] = `${attendanceOnDate.attended_lectures}/${attendanceOnDate.total_lectures}`;
+          } else {
+            rowData[date] = '-';
+          }
+        }
+        records.push(rowData);
+      }
+
+      await csvWriter.writeRecords(records);
+      
+      const attachment = new AttachmentBuilder(filePath);
+      await message.reply({
+        content: `📊 Full Attendance CSV Export for class **${session.class_id}**:`,
+        files: [attachment]
+      });
+
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (error) {
+      console.error(error);
+      message.reply('An error occurred during CSV export.');
+    }
   }
 });
 

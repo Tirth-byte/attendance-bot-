@@ -195,6 +195,11 @@ client.on('messageCreate', async (message) => {
     }
 
     try {
+      const student = await getStudent(session.class_id, roll);
+      if (!student) {
+        return message.reply(`Student with Roll **${roll}** does not exist in class **${session.class_id}**. Please add them using !addstudent or upload the CSV first.`);
+      }
+
       const existing = await checkDuplicateAttendance(session.class_id, session.currentDate, roll);
       if (existing) {
         return message.reply(`Attendance already marked for Roll: ${roll} on ${session.currentDate} (Class: ${session.class_id}). Use !change to update it.`);
